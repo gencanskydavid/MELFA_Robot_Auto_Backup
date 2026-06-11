@@ -1,0 +1,19 @@
+# MELFA Robot Automatic Backup Tool Settings
+
+robot:
+  ip: "192.168.10.201"      # IP address of the CR800 controller
+  port: 10001             # PC Support port 2 (verified from Wireshark OPSTSRD response)
+  timeout_seconds: 15     # TCP socket timeout (increased for slow handshakes)
+  name: "melfa_robot"     # Subdirectory name under output_dir
+
+backup:
+  # "code" for programs (.prg) and point files (.pot)
+  # "full" for programs, point files, parameters (.par), and variables (.vrb)
+  type: "full"
+  output_dir: "./backups" # Main output directory for backups
+  retention_days: 30      # Retain older backups (only active if version_control.enabled is false)
+
+version_control:
+  enabled: true           # Tracks backups inside a Git repository
+  git_repo_path: "./backups" # Git repository path
+  auto_commit: true       # Performs automatic git commit on successful backup

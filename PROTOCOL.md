@@ -21,14 +21,14 @@ sequenceDiagram
     participant Robot as CR800 Controller (Port 10002)
 
     Note over PC, Robot: Plaintext Handshake Phase
-    PC->>Robot: 1;1;OPEN=TOOLBOX\r\n
-    Robot-->>PC: QoK3F;3F;7,0;<controller_info>\r\n
-    PC->>Robot: 1;1;CHGPRT=HC\r\n
-    Robot-->>PC: QoK\r\n
+    PC->>Robot: "1;1;OPEN=TOOLBOX\r\n"
+    Robot-->>PC: "QoK3F;3F;7,0;<controller_info>\r\n"
+    PC->>Robot: "1;1;CHGPRT=HC\r\n"
+    Robot-->>PC: "QoK\r\n"
 
     Note over PC, Robot: HC-Framed Binary Phase
-    PC->>Robot: [STX]HC0000000010002R00141;1;OPEN=TOOLBOX;ENG7A[ETX]
-    Robot-->>PC: [STX]HC0000000010000S0000QoK...[ETX]
+    PC->>Robot: "[STX]HC0000000010002R00141;1;OPEN=TOOLBOX;ENG7A[ETX]"
+    Robot-->>PC: "[STX]HC0000000010000S0000QoK...[ETX]"
     Note over PC, Robot: Connection established in engineering/backup mode
 ```
 

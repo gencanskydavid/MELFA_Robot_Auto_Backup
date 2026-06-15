@@ -66,6 +66,7 @@ import re
 import logging
 import subprocess
 import yaml
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Union, Optional, List, Dict
@@ -450,6 +451,19 @@ class MelfaProtocol:
             cmd = f"1;1;PDIR{page:02X}"
         return self._send_hc(cmd)
 
+    def get_fdir_page(self, page: int, area: str) -> str:
+        """
+        VERIFIED (Wireshark dumps):
+        FDIR lists all files page-by-page.
+        Page 0 uses '<' suffix; pages 1+ use a '0' + page number suffix (e.g. '01', '02', '010', '097').
+        Returns the raw FDIR response.
+        """
+        if page == 0:
+            cmd = f"1;1;FDIR<{area}"
+        else:
+            cmd = f"1;1;FDIR0{page}{area}"
+        return self._send_hc(cmd)
+
     def read_file_block(self, block_num: int) -> bytes:
         """
         VERIFIED (Wireshark lines 5491+, 5527+):
@@ -581,6 +595,41 @@ def parse_pdir_entry(payload: str) -> Optional[dict]:
     }
 
 
+def parse_fdir_entry(payload: str) -> Optional[dict]:
+    """
+    Parse one FDIR response payload.
+    Format: {filename};{attribute};{datetime};{count/other};{size/other};...
+    """
+    if not payload or not payload.strip():
+        return None
+    parts = payload.split(";")
+    if len(parts) < 3:
+        return None
+    name = parts[0].strip()
+    return {
+        "name": name,
+        "attr": parts[1].strip() if len(parts) > 1 else "",
+        "datetime": parts[2].strip() if len(parts) > 2 else "",
+        "raw": payload,
+    }
+
+
+def parse_fdir_count(payload: str) -> Optional[int]:
+    """
+    Extract total files count from page 0 response.
+    Field 3 is the count.
+    """
+    if not payload or not payload.strip():
+        return None
+    parts = payload.split(";")
+    if len(parts) >= 4:
+        try:
+            return int(parts[3].strip())
+        except ValueError:
+            pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Backup orchestration
 # ---------------------------------------------------------------------------
@@ -601,10 +650,11 @@ class RobotBackup:
         )
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_type = settings.get("backup", {}).get("type", "full").lower()
         self.backup_dir = (
             Path(settings["backup"]["output_dir"])
             / robot["name"]
-            / timestamp
+            / f"{timestamp}_{backup_type}"
         )
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         log.info(f"Backup directory: {self.backup_dir}")
@@ -624,20 +674,35 @@ class RobotBackup:
             log.info(f"Filesystem info: {info}")
             (self.backup_dir / "robot_info.txt").write_text(info, encoding="utf-8")
 
-            programs = self._list_programs()
-            log.info(f"Found {len(programs)} program(s).")
+            backup_type = self.settings.get("backup", {}).get("type", "full").lower()
+            log.info(f"Starting backup with type: {backup_type}")
+
+            files_to_download: List[dict] = []
+
+            if backup_type in ("code", "programs"):
+                programs = self._list_programs()
+                files_to_download = [f for f in programs if f["name"].upper().endswith(".MB6")]
+            elif backup_type in ("parameters", "param"):
+                all_files = self._list_files_fdir("PRM")
+                files_to_download = [f for f in all_files if f["name"].upper().endswith(".PRM")]
+            else:
+                files_to_download = self._list_files_fdir("*.*")
+
+            log.info(f"Selected {len(files_to_download)} file(s) for download.")
             (self.backup_dir / "program_list.txt").write_text(
-                "\n".join(p["name"] for p in programs),
+                "\n".join(f["name"] for f in files_to_download),
                 encoding="utf-8",
             )
 
-            self._download_programs(programs)
+            self._download_files(files_to_download)
 
             self.proto.close_session()     # HC:     CLOSE
             self.proto.disconnect()        # TCP close
 
             if self.settings["version_control"]["enabled"]:
                 self._git_commit()
+            else:
+                clean_old_backups(self.backup_dir.parent, self.settings.get("backup", {}).get("retention_days", 30))
 
             log.info("✓ Backup complete.")
             return True
@@ -675,25 +740,85 @@ class RobotBackup:
         return programs
 
     # ------------------------------------------------------------------
-    # Step 2: download each program via FREAD
+    # Step 1b: list files via FDIR
     # ------------------------------------------------------------------
 
-    def _download_programs(self, programs: List[dict]) -> None:
-        prog_dir = self.backup_dir / "programs"
-        prog_dir.mkdir(exist_ok=True)
+    def _list_files_fdir(self, area: str) -> List[dict]:
+        log.info(f"Listing files via FDIR with area={area}...")
+        files: List[dict] = []
 
-        for entry in programs:
+        # Page 0
+        resp_0 = self.proto.get_fdir_page(0, area)
+        if not resp_0:
+            log.debug("FDIR page 0: empty.")
+            return files
+
+        entry_0 = parse_fdir_entry(resp_0)
+        if entry_0:
+            files.append(entry_0)
+
+        total_count = parse_fdir_count(resp_0)
+        if total_count is None:
+            log.warning("Total files count not found in page 0 response.")
+            total_count = 512
+
+        log.info(f"Reported total files count: {total_count}")
+
+        for page in range(1, total_count + 1):
+            resp = self.proto.get_fdir_page(page, area)
+            if not resp:
+                log.debug(f"FDIR page {page}: empty — end of list.")
+                break
+
+            entry = parse_fdir_entry(resp)
+            if entry:
+                files.append(entry)
+                log.info(f"  [{page:03d}] {entry['name']} (modified {entry['datetime']})")
+            else:
+                log.debug(f"FDIR page {page}: invalid entry — {resp[:40]!r}")
+
+        # Deduplicate listed files by name (since page 0 and page 1 return duplicate entries)
+        seen = set()
+        deduped = []
+        for f in files:
+            name_lower = f["name"].lower()
+            if name_lower not in seen:
+                seen.add(name_lower)
+                deduped.append(f)
+
+        log.info(f"Found {len(deduped)} unique file(s) after deduplication.")
+        return deduped
+
+    # ------------------------------------------------------------------
+    # Step 2: download files via FREAD and sort by extension
+    # ------------------------------------------------------------------
+
+    def _download_files(self, files: List[dict]) -> None:
+        for entry in files:
             name = entry["name"]
-            log.info(f"Downloading {name} ...")
+            ext = Path(name).suffix.upper()
 
-            # VERIFIED sequence: FOPEN -> FREAD loop -> FCLOSE -> FQUIT
+            if ext == ".MB6":
+                subdir = "programs"
+            elif ext == ".PRM":
+                subdir = "parameters"
+            elif ext in (".LOG", ".EVL"):
+                subdir = "logs"
+            else:
+                subdir = "system"
+
+            dest_dir = self.backup_dir / subdir
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            log.info(f"Downloading {name} ({subdir}) ...")
+
             self.proto.open_file(name)
             data = self._read_file()
             self.proto.close_file()
             self.proto.quit_file_mode()
 
             if data:
-                dest = prog_dir / name
+                dest = dest_dir / name
                 dest.write_bytes(data)
                 log.info(f"  Saved {len(data):,} bytes → {dest}")
             else:
@@ -766,6 +891,28 @@ class RobotBackup:
             log.warning("git not found in PATH — version control skipped.")
         except subprocess.CalledProcessError as exc:
             log.error(f"Git command failed: {exc}")
+
+
+def clean_old_backups(robot_backup_dir: Union[str, Path], retention_days: int) -> None:
+    """
+    Remove backup directories older than retention_days.
+    Expects folder names matching YYYY-MM-DD_HH-MM-SS.
+    """
+    import time
+    robot_dir = Path(robot_backup_dir)
+    if not robot_dir.exists():
+        return
+
+    cutoff = time.time() - (retention_days * 24 * 60 * 60)
+    for path in robot_dir.iterdir():
+        if path.is_dir():
+            if re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_.*)?$", path.name):
+                if path.stat().st_mtime < cutoff:
+                    try:
+                        shutil.rmtree(path)
+                        log.info(f"Retention: Deleted old backup folder {path}")
+                    except Exception as e:
+                        log.warning(f"Retention: Failed to delete {path}: {e}")
 
 
 # ---------------------------------------------------------------------------

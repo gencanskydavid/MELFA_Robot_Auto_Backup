@@ -78,13 +78,11 @@ backups/
 
 ---
 
-## 📝 Note on Parameter Backups (Experimental)
+## 📝 Parameter Backups (Fully Verified)
 
-> [!WARNING]
-> Parameter backups (`type: "full"` in config) are **currently unverified and experimental**. 
-> The Wireshark packet capture used to write this tool was taken during a programs-only backup. The parameter download sequences (`.PAR` and `.VRB` files) have not yet been fully verified. 
-> 
-> Currently, the tool is fully verified only for downloading and backing up user programs (`.MB6` files). If you require critical system parameter backups, please continue using RT ToolBox3 until parameter verification is completed.
+> [!NOTE]
+> Parameter backups (`type: "parameters"` or `type: "full"` in config) are **fully verified and supported**.
+> The tool has been tested and verified against captured parameter-only backup sequences. FDIR paginated files are listed with client-side extension filtering to download all `.PRM` parameter files correctly.
 
 ---
 

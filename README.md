@@ -2,7 +2,7 @@
 
 A lightweight, high-performance Python-based command-line backup tool for **Mitsubishi Electric CR800 Series** robot controllers (MELFA series). 
 
-This tool communicates directly with the controller over TCP/IP using the reverse-engineered RT ToolBox3 protocol. It performs automated backups of user programs (`.MB6`) and configuration profiles, making it ideal for scheduled backups, remote maintenance, and change tracking under version control (Git).
+This tool communicates directly with the controller over TCP/IP. It performs automated backups of user programs (`.MB6`) and configuration profiles, making it ideal for scheduled backups, remote maintenance, and change tracking under version control (Git).
 
 ---
 
@@ -83,12 +83,6 @@ backups/
 > [!NOTE]
 > Parameter backups (`type: "parameters"` or `type: "full"` in config) are **fully verified and supported**.
 > The tool has been tested and verified against captured parameter-only backup sequences. FDIR paginated files are listed with client-side extension filtering to download all `.PRM` parameter files correctly.
-
----
-
-## 🛠️ Technical Protocol Specifications
-
-For a detailed, low-level breakdown of the packet structures, HC frame layouts, XOR checksum calculation, and file transaction states, please read [PROTOCOL.md](./PROTOCOL.md).
 
 ---
 
